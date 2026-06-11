@@ -100,7 +100,7 @@ if let flagIndex = CommandLine.arguments.firstIndex(of: "--celebrate") {
     DispatchQueue.main.async {
         Celebration.show(tierIndex: tierIndex)
     }
-    DispatchQueue.main.asyncAfter(deadline: .now() + 7) {
+    DispatchQueue.main.asyncAfter(deadline: .now() + 12) {
         exit(0)
     }
     app.run()

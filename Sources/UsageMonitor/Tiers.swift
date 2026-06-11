@@ -1,5 +1,15 @@
 import SwiftUI
 
+/// How hard to party when a tier floor is crossed.
+enum CelebrationStyle {
+    case none          // crossing is logged, nothing is shown
+    case modest        // promotion card + a light drizzle
+    case classic       // the full banana confetti
+    case ridiculous    // double confetti and a banana storm
+    case insanity      // lightning bolts, chaos
+    case eventHorizon  // insanity, but the lightning is black
+}
+
 /// One rung of the company token-usage scoreboard. The middle three are
 /// real (per the scoreboard); the rest are extrapolated with confidence.
 struct Tier {
@@ -9,6 +19,7 @@ struct Tier {
     let colors: [Color]
     let flavor: [String]
     let promotionLine: String
+    let celebration: CelebrationStyle
 
     func randomFlavor() -> String {
         flavor.randomElement() ?? ""
@@ -27,7 +38,8 @@ enum TierLadder {
                 "Have you tried asking it anything?",
                 "The scoreboard cannot see you yet.",
             ],
-            promotionLine: "Technically on the board."
+            promotionLine: "Technically on the board.",
+            celebration: .none
         ),
         Tier(
             name: "AI Curious",
@@ -39,7 +51,8 @@ enum TierLadder {
                 "A million tokens. The model remembers you. Barely.",
                 "Dipping a toe into the inference ocean.",
             ],
-            promotionLine: "Seven figures. The journey begins."
+            promotionLine: "Seven figures. The journey begins.",
+            celebration: .none
         ),
         Tier(
             name: "AI Adopter",
@@ -51,7 +64,8 @@ enum TierLadder {
                 "Eight figures of tokens and a dream.",
                 "You adopt AI. AI has not yet adopted you.",
             ],
-            promotionLine: "Welcome to the official scoreboard."
+            promotionLine: "Welcome to the official scoreboard.",
+            celebration: .none
         ),
         Tier(
             name: "Deeply Connected",
@@ -63,7 +77,8 @@ enum TierLadder {
                 "Nine figures. Your standup updates are co-authored now.",
                 "The cache knows your codebase better than you do.",
             ],
-            promotionLine: "The plug is in. You are the plug."
+            promotionLine: "The plug is in. You are the plug.",
+            celebration: .modest
         ),
         Tier(
             name: "Agentic",
@@ -75,7 +90,21 @@ enum TierLadder {
                 "A billion tokens. HR has questions. The scoreboard has answers.",
                 "Your subagents have subagents.",
             ],
-            promotionLine: "ONE BILLION TOKENS. You are the workflow now."
+            promotionLine: "ONE BILLION TOKENS. You are the workflow now.",
+            celebration: .classic
+        ),
+        Tier(
+            name: "Load-Bearing Customer",
+            emoji: "🏗️",
+            floor: 5_000_000_000,
+            colors: [Color.orange, Color.red],
+            flavor: [
+                "Five billion tokens. Capacity planning has a column for you.",
+                "If you take a vacation, a graph somewhere dips.",
+                "You are not using the infrastructure. You are the infrastructure.",
+            ],
+            promotionLine: "FIVE BILLION. The datacenter leans on you now.",
+            celebration: .ridiculous
         ),
         Tier(
             name: "Post-Scarcity",
@@ -87,7 +116,8 @@ enum TierLadder {
                 "Ten billion tokens. Somewhere, a datacenter hums your name.",
                 "At this point you may legally claim the GPUs as dependents.",
             ],
-            promotionLine: "Beyond the scoreboard. Beyond reason."
+            promotionLine: "Beyond the scoreboard. Beyond reason.",
+            celebration: .insanity
         ),
         Tier(
             name: "Singularity",
@@ -99,7 +129,8 @@ enum TierLadder {
                 "You are not on the scoreboard. The scoreboard is on you.",
                 "Finance no longer asks. They budget for you like weather.",
             ],
-            promotionLine: "100B. The event horizon. There is no next tier."
+            promotionLine: "100B. The event horizon. There is no next tier.",
+            celebration: .eventHorizon
         ),
     ]
 

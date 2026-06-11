@@ -92,9 +92,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let celebrated = UserDefaults.standard.object(forKey: key) as? Int ?? -1
         guard index > celebrated else { return }
         UserDefaults.standard.set(index, forKey: key)
-        guard index > 0 else { return }
+        let tier = TierLadder.tiers[index]
+        guard tier.celebration != .none else { return }
         Celebration.show(tierIndex: index)
-        flashTitle(TierLadder.tiers[index])
+        flashTitle(tier)
     }
 
     private func flashTitle(_ tier: Tier) {
