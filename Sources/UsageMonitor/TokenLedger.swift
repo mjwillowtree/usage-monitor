@@ -250,14 +250,16 @@ enum TokenLedger {
     }
 }
 
-/// "1,234" / "56.7K" / "247.3M" / "1.24B" — the scoreboard dialect.
+/// "850" / "57K" / "250M" / "1.2B" — two significant digits.
 func compactTokens(_ n: Int64) -> String {
-    let v = Double(n)
+    guard n > 0 else { return "\(n)" }
+    let scale = pow(10, floor(log10(Double(n))) - 1)
+    let v = (Double(n) / scale).rounded() * scale
     switch v {
-    case ..<1_000: return "\(n)"
+    case ..<1_000: return "\(Int(v))"
     case ..<1_000_000: return trimmed(v / 1_000, 1) + "K"
     case ..<1_000_000_000: return trimmed(v / 1_000_000, 1) + "M"
-    default: return trimmed(v / 1_000_000_000, 2) + "B"
+    default: return trimmed(v / 1_000_000_000, 1) + "B"
     }
 }
 

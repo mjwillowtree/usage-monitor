@@ -89,6 +89,18 @@ enum TierLadder {
             ],
             promotionLine: "Beyond the scoreboard. Beyond reason."
         ),
+        Tier(
+            name: "Singularity",
+            emoji: "🕳️",
+            floor: 100_000_000_000,
+            colors: [Color.white, Color.yellow, Color.orange],
+            flavor: [
+                "One hundred billion tokens. The model is thinking about you right now.",
+                "You are not on the scoreboard. The scoreboard is on you.",
+                "Finance no longer asks. They budget for you like weather.",
+            ],
+            promotionLine: "100B. The event horizon. There is no next tier."
+        ),
     ]
 
     static func tierIndex(for tokens: Int64) -> Int {
