@@ -1,11 +1,16 @@
 import AppKit
+import SwiftUI
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private let menu = NSMenu()
     private var snapshot: UsageSnapshot?
+    private var tokenStats: TokenStats?
     private var lastError: Error?
     private var refreshTimer: Timer?
+    private var ledgerRunning = false
+    private var titleFlashTimer: Timer?
+    private var menuFlavor: String = ""
 
     private static let refreshInterval: TimeInterval = 5 * 60
 
@@ -28,6 +33,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func menuWillOpen(_ menu: NSMenu) {
         // Opening the menu always gets fresh-enough data on screen
         // immediately and kicks off a refetch in the background.
+        menuFlavor = tokenStats.map {
+            TierLadder.tier(for: $0.monthTokens).randomFlavor()
+        } ?? ""
         rebuildMenu()
         refresh()
     }
@@ -47,19 +55,73 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             updateTitle()
             rebuildMenu()
         }
+        refreshLedger()
+    }
+
+    /// Token counting reads hundreds of transcript files; keep it off the
+    /// main thread and never overlap two scans.
+    private func refreshLedger() {
+        guard !ledgerRunning else { return }
+        ledgerRunning = true
+        Task.detached(priority: .utility) {
+            let stats = TokenLedger.collect()
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.ledgerRunning = false
+                self.tokenStats = stats
+                if self.menuFlavor.isEmpty, let stats {
+                    self.menuFlavor = TierLadder.tier(for: stats.monthTokens).randomFlavor()
+                }
+                self.updateTitle()
+                self.rebuildMenu()
+                if let stats { self.checkPromotion(stats) }
+            }
+        }
+    }
+
+    // MARK: - Tier promotion
+
+    /// Fire the clickover celebration once per tier per month. First scan
+    /// of a month celebrates the tier you walk in holding — partly demo,
+    /// partly monthly ritual.
+    private func checkPromotion(_ stats: TokenStats) {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM"
+        let key = "celebratedTier-\(formatter.string(from: Date()))"
+        let index = TierLadder.tierIndex(for: stats.monthTokens)
+        let celebrated = UserDefaults.standard.object(forKey: key) as? Int ?? -1
+        guard index > celebrated else { return }
+        UserDefaults.standard.set(index, forKey: key)
+        guard index > 0 else { return }
+        Celebration.show(tierIndex: index)
+        flashTitle(TierLadder.tiers[index])
+    }
+
+    private func flashTitle(_ tier: Tier) {
+        titleFlashTimer?.invalidate()
+        statusItem.button?.title = "🍌 \(tier.name.uppercased()) \(tier.emoji)"
+        titleFlashTimer = Timer.scheduledTimer(
+            withTimeInterval: 6, repeats: false
+        ) { [weak self] _ in
+            Task { @MainActor in self?.updateTitle() }
+        }
     }
 
     // MARK: - Menu bar title
 
     private func updateTitle() {
         guard let button = statusItem.button else { return }
+        if titleFlashTimer?.isValid == true { return }
+        var parts: [String] = []
         if let percent = snapshot?.headlinePercent {
-            button.title = "✳ \(Int(percent.rounded()))%"
+            parts.append("\(Int(percent.rounded()))%")
         } else if lastError != nil {
-            button.title = "✳ !"
-        } else {
-            button.title = "✳ …"
+            parts.append("!")
         }
+        if let stats = tokenStats {
+            parts.append(compactTokens(stats.monthTokens))
+        }
+        button.title = parts.isEmpty ? "✳ …" : "✳ " + parts.joined(separator: " · ")
     }
 
     // MARK: - Menu construction
@@ -67,24 +129,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func rebuildMenu() {
         menu.removeAllItems()
 
-        menu.addItem(header("Claude Usage"))
+        if let stats = tokenStats {
+            menu.addItem(hostedItem(TierCardView(stats: stats, flavor: menuFlavor)))
+        } else {
+            menu.addItem(disabledItem("Counting tokens… (first scan takes a moment)"))
+        }
         menu.addItem(.separator())
 
+        menu.addItem(header("Rate Limits"))
         if let snapshot {
             for bucket in snapshot.buckets {
-                menu.addItem(bucketItem(
+                menu.addItem(hostedItem(BucketRowView(
                     label: bucket.label,
                     utilization: bucket.utilization,
                     detail: resetText(bucket.resetsAt)
-                ))
+                )))
             }
             if let extra = snapshot.extraUsage, extra.isEnabled {
-                if !snapshot.buckets.isEmpty { menu.addItem(.separator()) }
-                menu.addItem(bucketItem(
+                menu.addItem(hostedItem(BucketRowView(
                     label: "Extra usage (this month)",
                     utilization: extra.utilization,
                     detail: "\(dollars(extra.usedCents, extra.currency)) of \(dollars(extra.monthlyLimitCents, extra.currency))"
-                ))
+                )))
             }
             if snapshot.buckets.isEmpty && snapshot.extraUsage == nil {
                 menu.addItem(disabledItem("No usage limits reported"))
@@ -109,42 +175,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(quitItem)
     }
 
-    /// Two-line item: "Label                       42.0%" over a progress bar
-    /// and reset/detail text, mirroring the /usage screen.
-    private func bucketItem(label: String, utilization: Double, detail: String?) -> NSMenuItem {
+    private func hostedItem<V: View>(_ view: V) -> NSMenuItem {
         let item = NSMenuItem()
         item.isEnabled = false
-
-        let percentText = String(format: "%.1f%%", utilization)
-        let titleFont = NSFont.menuFont(ofSize: 0)
-        let monoFont = NSFont.monospacedSystemFont(ofSize: NSFont.systemFontSize(for: .small), weight: .regular)
-
-        let result = NSMutableAttributedString()
-        result.append(NSAttributedString(
-            string: "\(label)  —  \(percentText)\n",
-            attributes: [.font: titleFont, .foregroundColor: NSColor.labelColor]
-        ))
-
-        let filled = max(0, min(20, Int((utilization / 5.0).rounded())))
-        let barColor: NSColor = utilization >= 95 ? .systemRed
-            : utilization >= 80 ? .systemOrange
-            : .systemGreen
-        result.append(NSAttributedString(
-            string: String(repeating: "█", count: filled),
-            attributes: [.font: monoFont, .foregroundColor: barColor]
-        ))
-        result.append(NSAttributedString(
-            string: String(repeating: "░", count: 20 - filled),
-            attributes: [.font: monoFont, .foregroundColor: NSColor.tertiaryLabelColor]
-        ))
-        if let detail {
-            result.append(NSAttributedString(
-                string: "  \(detail)",
-                attributes: [.font: monoFont, .foregroundColor: NSColor.secondaryLabelColor]
-            ))
-        }
-
-        item.attributedTitle = result
+        let hosting = NSHostingView(rootView: view)
+        hosting.frame.size = hosting.fittingSize
+        item.view = hosting
         return item
     }
 
