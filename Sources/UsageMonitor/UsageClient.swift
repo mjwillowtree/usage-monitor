@@ -64,12 +64,55 @@ enum UsageError: Error, LocalizedError {
 
 enum UsageClient {
     private static let keychainService = "Claude Code-credentials"
+    private static let cacheService = "com.michaelchapman.claude-usage-monitor"
+    private static let cacheAccount = "cached-access-token"
     private static let usageURL = URL(string: "https://api.anthropic.com/api/oauth/usage")!
 
-    /// Reads the OAuth access token Claude Code keeps in the login Keychain.
-    /// Claude Code owns the refresh flow; if the token is stale we surface
-    /// that instead of touching the credential.
+    /// Returns a cached token if it's still valid (more than 60s remaining).
+    private static func cachedToken() -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: cacheService,
+            kSecAttrAccount as String: cacheAccount,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var result: AnyObject?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+              let data = result as? Data,
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let token = json["accessToken"] as? String,
+              let expiresAt = json["expiresAt"] as? Double,
+              Date(timeIntervalSince1970: expiresAt / 1000) > Date().addingTimeInterval(60)
+        else { return nil }
+        return token
+    }
+
+    /// Saves a token into the app's own keychain item (no access prompt needed).
+    private static func saveTokenToCache(_ token: String, expiresAt: Double) {
+        guard let data = try? JSONSerialization.data(withJSONObject: [
+            "accessToken": token,
+            "expiresAt": expiresAt,
+        ]) else { return }
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: cacheService,
+            kSecAttrAccount as String: cacheAccount,
+        ]
+        if SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary) == errSecItemNotFound {
+            var add = query
+            add[kSecValueData as String] = data
+            add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+            SecItemAdd(add as CFDictionary, nil)
+        }
+    }
+
+    /// Reads the OAuth access token. Uses the app's own cached copy when
+    /// valid; falls back to Claude Code's keychain item (which triggers the
+    /// system prompt) only when the cache is missing or expired.
     private static func accessToken() throws -> String {
+        if let cached = cachedToken() { return cached }
+
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: keychainService,
@@ -86,10 +129,11 @@ enum UsageClient {
         else {
             throw UsageError.noCredentials
         }
-        if let expiresAt = oauth["expiresAt"] as? Double,
-           Date(timeIntervalSince1970: expiresAt / 1000) < Date() {
+        let expiresAt = oauth["expiresAt"] as? Double ?? 0
+        if expiresAt > 0, Date(timeIntervalSince1970: expiresAt / 1000) < Date() {
             throw UsageError.tokenExpired
         }
+        saveTokenToCache(token, expiresAt: expiresAt)
         return token
     }
 

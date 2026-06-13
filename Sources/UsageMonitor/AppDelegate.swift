@@ -119,9 +119,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else if lastError != nil {
             parts.append("!")
         }
-        if let stats = tokenStats {
-            parts.append(compactTokens(stats.monthTokens))
-        }
         button.title = parts.isEmpty ? "✳ …" : "✳ " + parts.joined(separator: " · ")
     }
 
