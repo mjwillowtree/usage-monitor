@@ -64,22 +64,16 @@ enum UsageError: Error, LocalizedError {
 
 enum UsageClient {
     private static let keychainService = "Claude Code-credentials"
-    private static let cacheService = "com.michaelchapman.claude-usage-monitor"
-    private static let cacheAccount = "cached-access-token"
     private static let usageURL = URL(string: "https://api.anthropic.com/api/oauth/usage")!
+
+    private static var cacheFileURL: URL {
+        URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent(".claude/usage-monitor-token-cache.json")
+    }
 
     /// Returns a cached token if it's still valid (more than 60s remaining).
     private static func cachedToken() -> String? {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: cacheService,
-            kSecAttrAccount as String: cacheAccount,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-        ]
-        var result: AnyObject?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
-              let data = result as? Data,
+        guard let data = try? Data(contentsOf: cacheFileURL),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let token = json["accessToken"] as? String,
               let expiresAt = json["expiresAt"] as? Double,
@@ -88,23 +82,13 @@ enum UsageClient {
         return token
     }
 
-    /// Saves a token into the app's own keychain item (no access prompt needed).
+    /// Saves a token to a plain file so no extra keychain prompts are needed.
     private static func saveTokenToCache(_ token: String, expiresAt: Double) {
         guard let data = try? JSONSerialization.data(withJSONObject: [
             "accessToken": token,
             "expiresAt": expiresAt,
         ]) else { return }
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: cacheService,
-            kSecAttrAccount as String: cacheAccount,
-        ]
-        if SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary) == errSecItemNotFound {
-            var add = query
-            add[kSecValueData as String] = data
-            add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-            SecItemAdd(add as CFDictionary, nil)
-        }
+        try? data.write(to: cacheFileURL, options: .atomic)
     }
 
     /// Reads the OAuth access token. Uses the app's own cached copy when
