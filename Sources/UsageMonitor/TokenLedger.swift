@@ -6,6 +6,7 @@ struct DayTokens: Codable {
     var output: Int64 = 0
     var cacheCreate: Int64 = 0
     var cacheRead: Int64 = 0
+    var costDollars: Double = 0
 
     var total: Int64 { input + output + cacheCreate + cacheRead }
 
@@ -14,6 +15,7 @@ struct DayTokens: Codable {
         output += other.output
         cacheCreate += other.cacheCreate
         cacheRead += other.cacheRead
+        costDollars += other.costDollars
     }
 }
 
@@ -21,12 +23,20 @@ struct DaySample {
     let date: Date
     let dayKey: String
     let total: Int64
+    let costDollars: Double
+
+    /// Dollars per million tokens for this day, or nil when there's nothing to divide by.
+    var costPerMillionTokens: Double? {
+        guard total > 0 else { return nil }
+        return costDollars / Double(total) * 1_000_000
+    }
 }
 
 /// Everything the UI needs about local token consumption, precomputed.
 struct TokenStats {
     let monthTokens: Int64
     let monthBreakdown: DayTokens
+    let monthCostDollars: Double
     let prevMonthTokens: Int64
     let todayTokens: Int64
     let bestDay: DaySample?
@@ -42,6 +52,12 @@ struct TokenStats {
 
     var projectedMonthTokens: Int64 {
         Int64(dailyPace * Double(daysInMonth))
+    }
+
+    /// This month's average cost, in dollars per million tokens.
+    var monthCostPerMillionTokens: Double? {
+        guard monthTokens > 0 else { return nil }
+        return monthCostDollars / Double(monthTokens) * 1_000_000
     }
 }
 
@@ -63,6 +79,7 @@ enum TokenLedger {
         let o: Int64    // output
         let cc: Int64   // cache creation
         let cr: Int64   // cache read
+        let cost: Double // pre-priced cost in dollars, computed at parse time
     }
 
     private struct FileCache: Codable {
@@ -96,6 +113,50 @@ enum TokenLedger {
         f.dateFormat = "yyyy-MM-dd"
         return f
     }()
+
+    // MARK: - Pricing
+
+    /// List price per million tokens (input, output), by model-name substring.
+    /// Checked longest-substring-first so e.g. "sonnet-4-6" wins over "sonnet-4".
+    /// Cache creation is priced at 1.25x input (5m ephemeral default) and cache
+    /// read at 0.1x input, matching Anthropic's published cache economics.
+    /// Unmatched (e.g. very old or unreleased) models fall back to Sonnet
+    /// pricing as a rough approximation.
+    private static let modelPricing: [(match: String, input: Double, output: Double)] = [
+        ("claude-fable-5", 10, 50),
+        ("claude-mythos-5", 10, 50),
+        ("opus-4-8", 5, 25),
+        ("opus-4-7", 5, 25),
+        ("opus-4-6", 5, 25),
+        ("opus-4-5", 5, 25),
+        ("opus-4-1", 15, 75),
+        ("opus-4-0", 15, 75),
+        ("opus-4", 15, 75),
+        ("opus-3", 15, 75),
+        ("sonnet-4-6", 3, 15),
+        ("sonnet-4-5", 3, 15),
+        ("sonnet-4-0", 3, 15),
+        ("sonnet-4", 3, 15),
+        ("sonnet-3-7", 3, 15),
+        ("sonnet-3-5", 3, 15),
+        ("sonnet-3", 3, 15),
+        ("sonnet-5", 3, 15),
+        ("haiku-4-5", 1, 5),
+        ("haiku-3-5", 0.8, 4),
+        ("haiku-3", 0.25, 1.25),
+    ].sorted { $0.match.count > $1.match.count }
+
+    private static let fallbackPricing = (input: 3.0, output: 15.0)
+
+    private static func messageCostDollars(model: String, i: Int64, o: Int64, cc: Int64, cr: Int64) -> Double {
+        let rate = modelPricing.first { model.contains($0.match) }
+            .map { (input: $0.input, output: $0.output) } ?? fallbackPricing
+        let cost = Double(i) * rate.input
+            + Double(o) * rate.output
+            + Double(cc) * rate.input * 1.25
+            + Double(cr) * rate.input * 0.1
+        return cost / 1_000_000
+    }
 
     /// Scans transcripts and returns aggregated stats, or nil when there is
     /// no ~/.claude/projects directory. Heavy on first run; cheap after.
@@ -153,7 +214,7 @@ enum TokenLedger {
                     if !seen.insert(e.k).inserted { continue }
                 }
                 days[e.d, default: DayTokens()].add(
-                    DayTokens(input: e.i, output: e.o, cacheCreate: e.cc, cacheRead: e.cr))
+                    DayTokens(input: e.i, output: e.o, cacheCreate: e.cc, cacheRead: e.cr, costDollars: e.cost))
             }
         }
 
@@ -168,7 +229,7 @@ enum TokenLedger {
                 monthBreakdown.add(tokens)
                 if tokens.total > (bestDay?.total ?? 0),
                    let date = dayFormatter.date(from: key) {
-                    bestDay = DaySample(date: date, dayKey: key, total: tokens.total)
+                    bestDay = DaySample(date: date, dayKey: key, total: tokens.total, costDollars: tokens.costDollars)
                 }
             } else if key.hasPrefix(prevMonthPrefix) {
                 prevMonthTokens += tokens.total
@@ -180,13 +241,16 @@ enum TokenLedger {
             let date = calendar.date(byAdding: .day, value: -offset, to: now)!
             let key = dayFormatter.string(from: date)
             last30.append(DaySample(
-                date: date, dayKey: key, total: days[key]?.total ?? 0))
+                date: date, dayKey: key,
+                total: days[key]?.total ?? 0,
+                costDollars: days[key]?.costDollars ?? 0))
         }
 
         let todayKey = dayFormatter.string(from: now)
         return TokenStats(
             monthTokens: monthBreakdown.total,
             monthBreakdown: monthBreakdown,
+            monthCostDollars: monthBreakdown.costDollars,
             prevMonthTokens: prevMonthTokens,
             todayTokens: days[todayKey]?.total ?? 0,
             bestDay: bestDay,
@@ -223,13 +287,16 @@ enum TokenLedger {
             func count(_ field: String) -> Int64 {
                 (usage[field] as? NSNumber)?.int64Value ?? 0
             }
+            let i = count("input_tokens")
+            let o = count("output_tokens")
+            let cc = count("cache_creation_input_tokens")
+            let cr = count("cache_read_input_tokens")
+            let model = msg["model"] as? String ?? ""
             entries.append(MsgEntry(
                 k: key,
                 d: dayFormatter.string(from: date),
-                i: count("input_tokens"),
-                o: count("output_tokens"),
-                cc: count("cache_creation_input_tokens"),
-                cr: count("cache_read_input_tokens")
+                i: i, o: o, cc: cc, cr: cr,
+                cost: messageCostDollars(model: model, i: i, o: o, cc: cc, cr: cr)
             ))
         }
         return entries
@@ -268,4 +335,9 @@ private func trimmed(_ value: Double, _ places: Int) -> String {
     while s.hasSuffix("0") { s.removeLast() }
     if s.hasSuffix(".") { s.removeLast() }
     return s
+}
+
+/// "$3.42/M" — dollars per million tokens, list-price estimate.
+func formatCostPerMillion(_ dollarsPerMillion: Double) -> String {
+    "$" + String(format: dollarsPerMillion < 10 ? "%.2f" : "%.1f", dollarsPerMillion) + "/M"
 }

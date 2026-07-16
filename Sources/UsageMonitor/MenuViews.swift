@@ -84,27 +84,69 @@ struct SparklineView: View {
 
     private var maxTotal: Int64 { max(samples.map(\.total).max() ?? 1, 1) }
 
+    // Below this many tokens, the cost-per-token ratio is noise (a handful
+    // of tokens with an odd cache mix can swing wildly) — drop those days
+    // from the cost line rather than plot the spike.
+    private var costFloor: Int64 { max(1_000, Int64(Double(maxTotal) * 0.01)) }
+
+    private var costPoints: [(index: Int, cost: Double)] {
+        samples.enumerated().compactMap { index, sample in
+            guard sample.total >= costFloor, let cost = sample.costPerMillionTokens else { return nil }
+            return (index, cost)
+        }
+    }
+    private var maxCost: Double { max(costPoints.map(\.cost).max() ?? 0, 0.01) }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .bottom, spacing: 2.5) {
-                ForEach(Array(samples.enumerated()), id: \.offset) { index, sample in
-                    let isToday = index == samples.count - 1
-                    let h = max(2.5, 34 * CGFloat(sample.total) / CGFloat(maxTotal))
-                    Capsule()
-                        .fill(isToday
-                              ? AnyShapeStyle(LinearGradient(
-                                    colors: accent, startPoint: .bottom, endPoint: .top))
-                              : AnyShapeStyle(Color.primary.opacity(
-                                    sample.total == 0 ? 0.10 : 0.35)))
-                        .frame(height: h)
-                        .frame(maxHeight: 34, alignment: .bottom)
+            ZStack {
+                HStack(alignment: .bottom, spacing: 2.5) {
+                    ForEach(Array(samples.enumerated()), id: \.offset) { index, sample in
+                        let isToday = index == samples.count - 1
+                        let h = max(2.5, 34 * CGFloat(sample.total) / CGFloat(maxTotal))
+                        Capsule()
+                            .fill(isToday
+                                  ? AnyShapeStyle(LinearGradient(
+                                        colors: accent, startPoint: .bottom, endPoint: .top))
+                                  : AnyShapeStyle(Color.primary.opacity(
+                                        sample.total == 0 ? 0.10 : 0.35)))
+                            .frame(height: h)
+                            .frame(maxHeight: 34, alignment: .bottom)
+                    }
                 }
+                .frame(height: 34, alignment: .bottom)
+
+                GeometryReader { geo in
+                    Path { path in
+                        for (i, point) in costPoints.enumerated() {
+                            let x = samples.count > 1
+                                ? geo.size.width * CGFloat(point.index) / CGFloat(samples.count - 1)
+                                : geo.size.width / 2
+                            let y = geo.size.height - geo.size.height * CGFloat(point.cost / maxCost)
+                            if i == 0 {
+                                path.move(to: CGPoint(x: x, y: y))
+                            } else {
+                                path.addLine(to: CGPoint(x: x, y: y))
+                            }
+                        }
+                    }
+                    .stroke(Color.yellow, style: StrokeStyle(lineWidth: 1.5, lineJoin: .round))
+                }
+                .frame(height: 34)
             }
             .frame(height: 34, alignment: .bottom)
+
             HStack {
                 Text("last 30 days")
                 Spacer()
                 Text("peak \(compactTokens(maxTotal))/day")
+            }
+            .font(.system(size: 9))
+            .foregroundStyle(.tertiary)
+
+            HStack(spacing: 3) {
+                Rectangle().fill(Color.yellow).frame(width: 8, height: 1.5)
+                Text("avg cost/token · peak \(formatCostPerMillion(maxCost))")
             }
             .font(.system(size: 9))
             .foregroundStyle(.tertiary)
@@ -264,6 +306,9 @@ struct TierCardView: View {
                     Text("today \(compactTokens(stats.todayTokens))")
                     if let best = stats.bestDay {
                         Text("·  best day \(compactTokens(best.total))")
+                    }
+                    if let avgCost = stats.monthCostPerMillionTokens {
+                        Text("·  avg \(formatCostPerMillion(avgCost)) tokens this month")
                     }
                 }
                 .font(.system(size: 10))
