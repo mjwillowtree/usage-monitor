@@ -32,9 +32,12 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
-# Ad-hoc signature gives the app a stable identity so the Keychain
-# "Always Allow" choice sticks across rebuilds of the same source.
-codesign --force --sign - "$APP"
+# Signed with a locally-generated code-signing certificate ("UsageMonitor
+# Local Signing", see README) rather than ad-hoc (`--sign -`). Ad-hoc
+# identities are keyed to the exact binary hash, so macOS Keychain ACL's
+# "Always Allow" grant doesn't survive a rebuild; a real certificate keeps
+# the same identity across rebuilds, so the grant actually sticks.
+codesign --force --sign "UsageMonitor Local Signing" "$APP"
 
 echo "Built $APP"
 
