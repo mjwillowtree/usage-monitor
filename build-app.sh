@@ -32,12 +32,19 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
-# Signed with a locally-generated code-signing certificate ("UsageMonitor
-# Local Signing", see README) rather than ad-hoc (`--sign -`). Ad-hoc
-# identities are keyed to the exact binary hash, so macOS Keychain ACL's
-# "Always Allow" grant doesn't survive a rebuild; a real certificate keeps
-# the same identity across rebuilds, so the grant actually sticks.
-codesign --force --sign "UsageMonitor Local Signing" "$APP"
+# Prefer a locally-generated code-signing certificate ("UsageMonitor Local
+# Signing", see README) over ad-hoc (`--sign -`). Ad-hoc identities are keyed
+# to the exact binary hash, so macOS Keychain ACL's "Always Allow" grant
+# doesn't survive a rebuild; a real certificate keeps the same identity across
+# rebuilds, so the grant actually sticks. The certificate is optional: without
+# it the build still works, you just re-approve the Keychain prompt after a
+# rebuild.
+IDENTITY="UsageMonitor Local Signing"
+if ! security find-identity -v -p codesigning | grep -q "$IDENTITY"; then
+    echo "note: no \"$IDENTITY\" certificate found — signing ad-hoc instead."
+    IDENTITY="-"
+fi
+codesign --force --sign "$IDENTITY" "$APP"
 
 echo "Built $APP"
 
