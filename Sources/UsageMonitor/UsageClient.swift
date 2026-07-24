@@ -91,34 +91,76 @@ enum UsageClient {
         try? data.write(to: cacheFileURL, options: .atomic)
     }
 
+    /// Every keychain payload stored under the service, most-recently-modified
+    /// first.
+    ///
+    /// A lone `kSecMatchLimitOne` lookup is not safe here: several generic
+    /// password items can share one service name (a stale item from an earlier
+    /// login, or another tool writing the same service), and macOS guarantees
+    /// nothing about which one it returns. Picking the wrong item made a
+    /// perfectly healthy credential look like "no credentials in Keychain", so
+    /// enumerate the candidates and let the caller pick the usable one.
+    private static func keychainPayloads() -> [Data] {
+        func payload(forAccount account: String?) -> Data? {
+            var query: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: keychainService,
+                kSecReturnData as String: true,
+                kSecMatchLimit as String: kSecMatchLimitOne,
+            ]
+            if let account { query[kSecAttrAccount as String] = account }
+            var result: AnyObject?
+            guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess
+            else { return nil }
+            return result as? Data
+        }
+
+        var attributes: AnyObject?
+        let status = SecItemCopyMatching([
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: keychainService,
+            kSecReturnAttributes as String: true,
+            kSecMatchLimit as String: kSecMatchLimitAll,
+        ] as CFDictionary, &attributes)
+
+        let accounts = (attributes as? [[String: Any]] ?? [])
+            .sorted {
+                let lhs = $0[kSecAttrModificationDate as String] as? Date ?? .distantPast
+                let rhs = $1[kSecAttrModificationDate as String] as? Date ?? .distantPast
+                return lhs > rhs
+            }
+            .compactMap { $0[kSecAttrAccount as String] as? String }
+
+        // Enumeration can legitimately come up empty (an item stored without an
+        // account attribute); fall back to the unfiltered lookup so this is
+        // never worse than a plain single-item read.
+        guard status == errSecSuccess, !accounts.isEmpty else {
+            return [payload(forAccount: nil)].compactMap { $0 }
+        }
+        return accounts.compactMap { payload(forAccount: $0) }
+    }
+
     /// Reads the OAuth access token. Uses the app's own cached copy when
     /// valid; falls back to Claude Code's keychain item (which triggers the
     /// system prompt) only when the cache is missing or expired.
     private static func accessToken() throws -> String {
         if let cached = cachedToken() { return cached }
 
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: keychainService,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-        ]
-        var result: AnyObject?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        guard status == errSecSuccess,
-              let data = result as? Data,
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let oauth = json["claudeAiOauth"] as? [String: Any],
-              let token = oauth["accessToken"] as? String
-        else {
-            throw UsageError.noCredentials
+        let credentials = keychainPayloads().compactMap { data -> (token: String, expiresAt: Double)? in
+            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let oauth = json["claudeAiOauth"] as? [String: Any],
+                  let token = oauth["accessToken"] as? String
+            else { return nil }
+            return (token, oauth["expiresAt"] as? Double ?? 0)
         }
-        let expiresAt = oauth["expiresAt"] as? Double ?? 0
-        if expiresAt > 0, Date(timeIntervalSince1970: expiresAt / 1000) < Date() {
+        guard let credential = credentials.first else { throw UsageError.noCredentials }
+
+        if credential.expiresAt > 0,
+           Date(timeIntervalSince1970: credential.expiresAt / 1000) < Date() {
             throw UsageError.tokenExpired
         }
-        saveTokenToCache(token, expiresAt: expiresAt)
-        return token
+        saveTokenToCache(credential.token, expiresAt: credential.expiresAt)
+        return credential.token
     }
 
     static func fetch() async throws -> UsageSnapshot {
