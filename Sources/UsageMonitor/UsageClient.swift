@@ -89,6 +89,11 @@ enum UsageClient {
             "expiresAt": expiresAt,
         ]) else { return }
         try? data.write(to: cacheFileURL, options: .atomic)
+        // The file holds a live bearer token, so keep it owner-only. An atomic
+        // write swaps in a fresh inode, so the mode has to be re-applied here
+        // rather than set once at creation.
+        try? FileManager.default.setAttributes(
+            [.posixPermissions: 0o600], ofItemAtPath: cacheFileURL.path)
     }
 
     /// Every keychain payload stored under the service, most-recently-modified
